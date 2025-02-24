@@ -1,119 +1,99 @@
-"use client"
+"use client"; // Ensure client-side rendering for Leaflet
 
-import dynamic from "next/dynamic"
-import { useState, useEffect } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
-import { Input } from "../components/ui/input"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table"
-import { Search } from "lucide-react"
+import React, { useState, useEffect, useRef } from 'react';
+import dynamic from 'next/dynamic'; // Import dynamic
+import 'leaflet/dist/leaflet.css';
+import Papa from 'papaparse';
 
-const Map = dynamic(() => import("@/components/map"), {
-  ssr: false,
-  loading: () => (
-    <div className="w-full h-[400px] bg-muted animate-pulse rounded-lg flex items-center justify-center">
-      Loading map...
-    </div>
-  ),
-})
+// Dynamic import for Leaflet to avoid SSR issues
+const L = dynamic(() => import('leaflet'), {
+    ssr: false, // Disable server-side rendering
+});
 
-type BannedIP = {
-  ip: string
-  country: string
-  countryCode: string
-  city: string
-}
+const MapComponent = () => {
+    const [map, setMap] = useState(null);
+    const mapRef = useRef(null); // Ref to the map container
 
-export default function Page() {
-  const [bannedIPs, setBannedIPs] = useState<BannedIP[]>([])
-  const [searchTerm, setSearchTerm] = useState("")
+    useEffect(() => {
+        if (!map) {
+            const newMap = L.map(mapRef.current).setView([0, 0], 2);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const response = await fetch("/banned_ips_locations.csv")
-        const data = await response.text()
-        const lines = data.split("\n")
-        const parsedIPs: BannedIP[] = []
+            L.tileLayer('https://tileserver.memomaps.de/tilegen/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            }).addTo(newMap);
 
-        // Skip header row and parse CSV
-        for (let i = 1; i < lines.length; i++) {
-          const line = lines[i].trim()
-          if (line) {
-            const [ip, countryCode, country] = line.split(",").map((item) => item.trim())
-            if (ip && countryCode && country) {
-              parsedIPs.push({
-                ip,
-                country,
-                countryCode,
-                city: "", // City data is not being used in this version
-              })
-            }
-          }
+            setMap(newMap);
         }
 
-        setBannedIPs(parsedIPs)
-      } catch (error) {
-        console.error("Error loading IPs:", error)
-      }
+    }, [map]);
+
+    useEffect(() => {
+        const fetchData = async () => {
+            try {
+                const response = await fetch('/data/ip_data.csv');
+                const text = await response.text();
+                const results = Papa.parse(text, { header: true, skipEmptyLines: true });
+                const data = results.data;
+
+                if (map) {
+                    const countryCounts = {};
+
+                    // Count occurrences of each country
+                    data.forEach(row => {
+                        const country = row.Country;
+                        countryCounts[country] = (countryCounts[country] || 0) + 1;
+                    });
+
+                    // Fetch GeoJSON data for countries
+                    const geoJsonUrl = 'https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson';
+                    const geoJsonRes = await fetch(geoJsonUrl);
+                    const geoJsonData = await geoJsonRes.json();
+
+                    // Add GeoJSON layer to the map with dynamic styling and popup
+                    L.geoJSON(geoJsonData, {
+                        style: (feature) => {
+                            const countryName = feature.properties.ADMIN;
+                            const count = countryCounts[countryName] || 0;
+                            return {
+                                fillColor: getColor(count),
+                                weight: 1,
+                                opacity: 1,
+                                color: 'white',
+                                fillOpacity: 0.7,
+                            };
+                        },
+                        onEachFeature: (feature, layer) => {
+                            const countryName = feature.properties.ADMIN;
+                            const count = countryCounts[countryName] || 0;
+                            layer.bindPopup(`${countryName}: ${count} IP(s)`);
+                        },
+                    }).addTo(map);
+                }
+
+            } catch (error) {
+                console.error('Error fetching or processing CSV data:', error);
+            }
+        };
+
+        fetchData();
+
+    }, [map]); // Run when map is initialized
+
+    // Color Palette function
+    function getColor(count: number): string {
+        return count > 5 ? '#800026' :
+            count > 4 ? '#BD0026' :
+                count > 3 ? '#E31A1C' :
+                    count > 2 ? '#FC4E2A' :
+                        count > 1 ? '#FD8D3C' :
+                            count > 0 ? '#FEB24C' :
+                                '#FFEDA0';
     }
 
-    fetchData()
-  }, [])
+    return (
+        <div id="map" ref={mapRef} style={{ height: '600px' }}></div>
+    );
+};
 
-  const filteredIPs = bannedIPs.filter(
-    (ip) =>
-      ip.ip.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      ip.country.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      ip.countryCode.toLowerCase().includes(searchTerm.toLowerCase()),
-  )
+export default MapComponent;
 
-  return (
-    <div className="container mx-auto p-4 space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Banned IP Locations Map</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Map locations={bannedIPs} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Banned IPs List</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center space-x-2 mb-4">
-            <Search className="w-4 h-4 text-muted-foreground" />
-            <Input
-              placeholder="Search by IP, country, or country code..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="max-w-sm"
-            />
-          </div>
-          <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>IP Address</TableHead>
-                  <TableHead>Country Code</TableHead>
-                  <TableHead>Country</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredIPs.map((ip, index) => (
-                  <TableRow key={index}>
-                    <TableCell className="font-mono">{ip.ip}</TableCell>
-                    <TableCell>{ip.countryCode}</TableCell>
-                    <TableCell>{ip.country}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  )
-}
